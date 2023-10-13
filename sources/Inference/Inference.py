@@ -58,14 +58,7 @@ def main():
     time_container["Detection_Classification"] = round(time() - start_time, 3)
     time_container["Detection_Classification_Per_Image"] = round(time_container['Detection_Classification'] / num_images, 3)
     print(f"Detection_Classification time : {time_container['Detection_Classification']} (per image : {time_container['Detection_Classification_Per_Image']})")
-
-    print("=== Detection_Classification_ResNet ===")
-    start_time = time()
-    os.system(f"python Detection_Classification_ResNet.py --image_root_path {image_root_path}")
-    time_container["Detection_Classification_ResNet"] = round(time() - start_time, 3)
-    time_container["Detection_Classification_ResNet_Per_Image"] = round(time_container['Detection_Classification_ResNet'] / num_images, 3)
-    print(f"Detection_Classification_ResNet time : {time_container['Detection_Classification_ResNet']} (per image : {time_container['Detection_Classification_ResNet_Per_Image']})")
-
+    
     print("=== SingleShot_Classification ===")
     start_time = time()
     os.system(f"python SingleShot_Classification.py --image_root_path {image_root_path}")

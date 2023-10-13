@@ -78,7 +78,7 @@ def seed_everything(seed=42):
 class CFG:
     debug = False
     n_folds = 5
-    img_size = 224
+    img_size = 384
     detection_img_size = 640
     detection_root_path = "./tmp/"
     channels = 3
@@ -134,6 +134,16 @@ def get_metainfo_dataframe(img_root_path):
         df_metainfo[img_category][["cls_" + i for i in label_mapper[img_category].keys()]] = df_metainfo[img_category][["cls_" + i for i in label_mapper[img_category].keys()]].astype("int32")
     return df_metainfo
 
+# func: yolo 좌표게를 cv2 좌표계로 변환한 후 이미지를 cropping하여 저장하는 함수
+def convert_and_crop_images(coord, import_path, export_path):
+    x_min = int(coord[0]) - int(coord[2] / 2)
+    x_max = int(coord[0]) + int(coord[2] / 2)
+    y_min = int(coord[1]) - int(coord[3] / 2)
+    y_max = int(coord[1]) + int(coord[3] / 2)
+    img = cv2.imread(import_path)
+    img = img[y_min:y_max, x_min:x_max]
+    cv2.imwrite(export_path, img)
+
 # DNN모델로 cropping된 이미지를 분류하는 클래스 (각 타입별 모델을 따로 학습했기에 따로 예측)
 class effinet_classifier():
     def __init__(self,
@@ -166,20 +176,22 @@ class effinet_classifier():
             infer_device = torch.device('cpu')
 
         for img_category in label_mapper.keys():
-            # 위치 및 크기일 경우 예측하지 않도록 조건 지정 (규칙기반 알고리즘을 통해 예측함)
             if x[img_category] is None:
                 continue
-            # 모델 타입에 맞는 DNN torch 모델 로딩
-            model = EfficientNet.from_pretrained('efficientnet-b4', **self.model_params[img_category])
-            model.load_state_dict(torch.load(f"./models/crop/{img_category}_efficientnet.pth"))
-            model.eval()
             # 이미지 전처리 함수 실행
             img_feature = torch.stack([self.preprocessing(i) for i in x[img_category]])
-            # batch 단위로 DNN 모델 output 산출
-            output_raw[img_category] = self.get_output_from_model(
-                model, img_feature, None,
-                batch_size=batch_size, infer_device=infer_device,
-            )
+            tmp_output_raw = []
+            for fold in range(CFG.n_folds):
+                # 모델 타입에 맞는 DNN torch 모델 로딩
+                model = EfficientNet.from_pretrained('efficientnet-b4', **self.model_params[img_category])
+                model.load_state_dict(torch.load(f"./models/crop/{img_category}/{img_category}_model{fold+1}.pth"))
+                model.eval()
+                # batch 단위로 DNN 모델 output 산출
+                tmp_output_raw.append(self.get_output_from_model(
+                    model, img_feature, None,
+                    batch_size=batch_size, infer_device=infer_device,
+                ))
+            output_raw[img_category] = np.stack(tmp_output_raw, axis=0).mean(axis=0)
             # raw output을 클래스로 변환하는 후처리 함수 실행
             self.postprocessing(output_raw, output_prob, output_cls, img_category)
         # 결과값 리턴
@@ -293,15 +305,19 @@ def main(image_root_path=None):
 
     if os.path.exists(CFG.detection_root_path):
         for img_category in label_mapper.keys():
+            if len(df_metainfo[img_category]) == 0:
+                continue
             tmp = pickleIO(None, f"./detect_res_{img_category}.pkl", "r")
             df_metainfo[img_category][["x", "y", "w", "h"]] = tmp.values
     else:
         # Load the model
-        model_detection = YOLO(f"./models/detection/yolov5mu_best.pt")
+        model_detection = YOLO(f"./models/detection/yolov8lu.pt")
         # inference
         createFolder(CFG.detection_root_path)
         result_detect = {}
         for img_category in label_mapper.keys():
+            if len(df_metainfo[img_category]) == 0:
+                continue
             result_detect[img_category] = []
             for batch in DataLoader(df_metainfo[img_category]["fpath"].values, batch_size=CFG.batch_size, shuffle=False):
                 result_detect[img_category].extend(model_detection.predict([Image.open(i).resize((CFG.detection_img_size, CFG.detection_img_size)) for i in batch], imgsz=CFG.detection_img_size, conf=0.5, device="0"))
@@ -310,6 +326,8 @@ def main(image_root_path=None):
         gc.collect()
         
         for img_category in label_mapper.keys():
+            if len(df_metainfo[img_category]) == 0:
+                continue
             output = []
             for img_name, img_path, img_res in zip(df_metainfo[img_category]["fname"], df_metainfo[img_category]["fpath"], result_detect[img_category]):
                 if len(img_res) > 0:
@@ -325,9 +343,9 @@ def main(image_root_path=None):
             
     model = effinet_classifier()
     inputs = {
-        "house": (CFG.detection_root_path + df_metainfo["house"]["fname"].astype("str") + ".jpg").to_list(),
-        "tree": (CFG.detection_root_path + df_metainfo["tree"]["fname"].astype("str") + ".jpg").to_list(),
-        "person": (CFG.detection_root_path + df_metainfo["person"]["fname"].astype("str") + ".jpg").to_list(),
+        "house": None if len(df_metainfo["house"]) == 0 else (CFG.detection_root_path + df_metainfo["house"]["fname"].astype("str") + ".jpg").to_list(),
+        "tree": None if len(df_metainfo["tree"]) == 0 else (CFG.detection_root_path + df_metainfo["tree"]["fname"].astype("str") + ".jpg").to_list(),
+        "person": None if len(df_metainfo["person"]) == 0 else (CFG.detection_root_path + df_metainfo["person"]["fname"].astype("str") + ".jpg").to_list(),
     }
     result_clf_raw, result_clf_prob, result_clf_cls = model.infer(inputs)
     del model
@@ -336,6 +354,8 @@ def main(image_root_path=None):
 
     # loc & size를 제외한 classification 결과 저장를 dataframe에 저장 하는 프로세스
     for img_category in label_mapper.keys():
+        if len(df_metainfo[img_category]) == 0:
+            continue
         # loc & size를 제외한 컬럼명을 추출합니다
         cols = df_metainfo[img_category].filter(regex="|".join([f"^raw_{i}" for i in label_mapper[img_category] if i not in ["loc", "size"]])).columns
         # DNN 모델의 raw output을 저장합니다
@@ -353,6 +373,8 @@ def main(image_root_path=None):
                 
     # insert output to dataframe (undetected)
     for img_category in label_mapper.keys():
+        if len(df_metainfo[img_category]) == 0:
+            continue
         df_coord = df_metainfo[img_category][["x", "y", "w", "h"]]
         if img_category == "person":
             res = [

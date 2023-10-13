@@ -81,46 +81,51 @@ def main():
     df_output = {
         "detectCls": None,
         "singleshot": None,
-        "detectCls_resnet": None,
     }
-    df_output["detectCls"] = {k: pd.read_csv(f"./detectCls_{k}_output.csv") for k in label_mapper.keys()}
-    df_output["singleshot"] = {k: pd.read_csv(f"./singleshot_{k}_output.csv") for k in label_mapper.keys()}
-    df_output["detectCls_resnet"] = {k: pd.read_csv(f"./detectCls_resnet_{k}_output.csv") for k in label_mapper.keys()}
+    for model in df_output.keys():
+        df_output[model] = {}
+        for k in label_mapper.keys():
+            df_output[model][k] = pd.read_csv(f"./{model}_{k}_output.csv") if os.path.exists(f"./{model}_{k}_output.csv") else pd.DataFrame()
 
     ensemble_output = {}
-
     for k in label_mapper.keys():
-        ensemble_output[k] = pd.DataFrame(0.0, index=range(len(df_output["detectCls"][k])), columns=["fname", "fpath"] + [i for i in label_mapper[k].keys()], dtype="int32")
+        if len(df_output["detectCls"][k]) == 0:
+            continue
+        ensemble_output[k] = pd.DataFrame(0.0, index=range(len(df_output["detectCls"][k])), columns=["fname", "fpath"], dtype="int32")
         
         # detection이 안 된 경우
         # detection & classification 아키텍처가 제대로 예측하지 못할 것이라고 판단하여 singleshot 아키텍처의 가중치를 많이 두고 앙상블
-        prob_detect_n = (0.1 * df_output["detectCls"][k][(df_output["detectCls"][k]["x"] == -1).values].filter(regex="^prob_").replace(0.0, 0.333)) + \
-            (0.8 * df_output["singleshot"][k][(df_output["detectCls"][k]["x"] == -1).values].filter(regex="^prob_")) + \
-            (0.1 * df_output["detectCls_resnet"][k][(df_output["detectCls"][k]["x"] == -1).values].filter(regex="^prob_").replace(0.0, 0.333))
+        prob_detect_n = (0.0 * df_output["detectCls"][k][(df_output["detectCls"][k]["x"] == -1).values].filter(regex="^prob_")) + \
+            (1.0 * df_output["singleshot"][k][(df_output["detectCls"][k]["x"] == -1).values].filter(regex="^prob_"))
         cls_detect_n = {}
         for i in label_mapper[k].keys():
-            cols = prob_detect_n.filter(regex=f"^prob_{i}").columns
-            cls_detect_n[i] = prob_detect_n[cols].values.argmax(axis=1)
+            cls_detect_n[i] = pd.DataFrame()
+            # cls_detect_n[i] = prob_detect_n.filter(regex=f"^prob_{i}").copy()
+            cls_detect_n[i][prob_detect_n.filter(regex=f"^prob_{i}").columns] = prob_detect_n.filter(regex=f"^prob_{i}").copy()
+            cls_detect_n[i][f"pred_{i}"] = prob_detect_n[cls_detect_n[i].columns].values.argmax(axis=1)
 
         # detection이 된 경우
         # 두 아키텍처를 가중평균하여 앙상블한 후, 위치 및 크기의 경우는 detection & classification 아키텍처의 값을 항상 사용
-        prob_detect_y = (0.3 * df_output["detectCls"][k][(df_output["detectCls"][k]["x"] != -1).values].filter(regex="prob_*")) + \
-            (0.5 * df_output["singleshot"][k][(df_output["detectCls"][k]["x"] != -1).values].filter(regex="prob_*")) + \
-            (0.2 * df_output["detectCls_resnet"][k][(df_output["detectCls"][k]["x"] != -1).values].filter(regex="prob_*"))
+        prob_detect_y = (0.85 * df_output["detectCls"][k][(df_output["detectCls"][k]["x"] != -1).values].filter(regex="prob_*")) + \
+            (0.15 * df_output["singleshot"][k][(df_output["detectCls"][k]["x"] != -1).values].filter(regex="prob_*"))
+        
         cls_detect_y = {}
         for i in label_mapper[k].keys():
+            cls_detect_y[i] = pd.DataFrame()
             if i in ["size", "loc"]:
                 cols = df_output["detectCls"][k].filter(regex=f"^cls_{i}").columns
-                cls_detect_y[i] = df_output["detectCls"][k][(df_output["detectCls"][k]["x"] != -1).values][cols].values.flatten()
+                cls_detect_y[i][f"pred_{i}"] = df_output["detectCls"][k][cols].values.flatten()
             else:
-                cols = prob_detect_y.filter(regex=f"^prob_{i}").columns
-                cls_detect_y[i] = prob_detect_y[cols].values.argmax(axis=1)
+                cls_detect_y[i][prob_detect_y.filter(regex=f"^prob_{i}").columns] = prob_detect_y.filter(regex=f"^prob_{i}").values
+                cls_detect_y[i][f"pred_{i}"] = prob_detect_y[cls_detect_y[i].columns].values.argmax(axis=1)
 
         ensemble_output[k]["fname"] = df_output["detectCls"][k]["fname"].values.copy()
         ensemble_output[k]["fpath"] = df_output["detectCls"][k]["fpath"].values.copy()
         for i in label_mapper[k].keys():
-            ensemble_output[k].loc[(df_output["detectCls"][k]["x"] == -1).values, i] = cls_detect_n[i]
-            ensemble_output[k].loc[(df_output["detectCls"][k]["x"] != -1).values, i] = cls_detect_y[i]
+            for col in cls_detect_n[i]:
+                ensemble_output[k].loc[(df_output["detectCls"][k]["x"] == -1).values, col] = cls_detect_n[i][col]
+            for col in cls_detect_y[i]:
+                ensemble_output[k].loc[(df_output["detectCls"][k]["x"] != -1).values, col] = cls_detect_y[i][col]
 
     for k in ensemble_output.keys():
         ensemble_output[k].to_csv(f"./ensemble_{k}_output.csv", index=False)

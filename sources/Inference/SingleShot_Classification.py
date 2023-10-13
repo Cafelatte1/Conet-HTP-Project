@@ -225,6 +225,8 @@ class swin_classifier():
                 output_cls[i][j] = None
 
         for img_category in label_mapper.keys():
+            if x[img_category] is None:
+                continue
             # 모델 로딩
             model = pickleIO(None, f"./models/singleshot/{img_category}_swinV1.pkl", "r")
             # 추론
@@ -252,9 +254,9 @@ def main(image_root_path=None):
     df_metainfo = get_metainfo_dataframe(image_root_path)
 
     inputs = {
-        "house": df_metainfo["house"]["fpath"].to_list(),
-        "tree": df_metainfo["tree"]["fpath"].to_list(),
-        "person": df_metainfo["person"]["fpath"].to_list(),
+        "house": None if len(df_metainfo["house"]) == 0 else df_metainfo["house"]["fpath"].to_list(),
+        "tree": None if len(df_metainfo["tree"]) == 0 else df_metainfo["tree"]["fpath"].to_list(),
+        "person": None if len(df_metainfo["person"]) == 0 else df_metainfo["person"]["fpath"].to_list(),
     }
     model = swin_classifier()
     result_clf_prob, result_clf_cls = model.infer(inputs)
@@ -264,6 +266,8 @@ def main(image_root_path=None):
     
     # loc & size를 제외한 classification 결과 저장를 dataframe에 저장 하는 프로세스
     for img_category in label_mapper.keys():
+        if len(df_metainfo[img_category]) == 0:
+            continue
         # loc & size를 제외한 컬럼명을 추출합니다
         cols = df_metainfo[img_category].filter(regex="|".join([f"^raw_{i}" for i in label_mapper[img_category]])).columns
         # DNN 모델의 raw output을 저장합니다

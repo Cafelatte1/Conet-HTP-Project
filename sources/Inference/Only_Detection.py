@@ -146,7 +146,6 @@ def convert_and_crop_images(coord, import_path, export_path):
     img = img[y_min:y_max, x_min:x_max]
     cv2.imwrite(export_path, img)
 
-
 def main(image_root_path=None):
     if image_root_path is None:
         # df_metainfo = get_metainfo_dataframe("./dataset/raw/val_images/", "./tmp/")
@@ -157,14 +156,17 @@ def main(image_root_path=None):
     df_metainfo = get_metainfo_dataframe(image_root_path)
 
     # Load the model
-    model_detection = YOLO(f"./models/detection/yolov5mu_best.pt")
+    model_detection = YOLO(f"./models/detection/yolov8lu.pt")
     # inference
     createFolder(CFG.detection_root_path)
     result_detect = {}
     for img_category in label_mapper.keys():
-        result_detect[img_category] = {"conf": [], "coord": []}
+        if len(df_metainfo[img_category]) == 0:
+            continue
+        result_detect[img_category] = {"cls": [], "conf": [], "coord": []}
         for batch in DataLoader(df_metainfo[img_category]["fpath"].values, batch_size=CFG.batch_size, shuffle=False):
-            for output in model_detection.predict(batch, imgsz=(CFG.detection_img_size, CFG.detection_img_size), conf=0.5, device="0", half=True):
+            for output in model_detection.predict(batch, imgsz=(CFG.detection_img_size, CFG.detection_img_size), conf=0.25, device="0", half=False):
+                result_detect[img_category]["cls"].append(output.boxes.cls.detach().cpu().numpy())
                 result_detect[img_category]["conf"].append(output.boxes.conf.detach().cpu().numpy())
                 result_detect[img_category]["coord"].append(output.boxes.xywh.detach().cpu().numpy())
             del output
@@ -177,13 +179,35 @@ def main(image_root_path=None):
               
     # 추론 결과물을 활용해 raw이미지를 cropping하고 임시폴더에 저장합니다
     # 여러 bounding box가 검출 시, 가장 큰 bounding box를 선택합니다 - select 알고리즘은 추후 고도화 가능
-    for img_category in label_mapper.keys():
+
+    # V1
+    # for img_category in label_mapper.keys():
+    #     if len(df_metainfo[img_category]) == 0:
+    #         continue
+    #     output = []
+    #     for img_name, img_path, img_conf, img_coord in zip(df_metainfo[img_category]["fname"], df_metainfo[img_category]["fpath"], result_detect[img_category]["conf"], result_detect[img_category]["coord"]):
+    #         # 검출된 객체가 하나 이상이면 가장 bounding box 넓이가 큰 것을 저장합니다
+    #         if len(img_conf) > 0:
+    #             tmp = pd.Series({i: j for i, j in zip(img_conf, img_coord)})
+    #             tmp = tmp.iloc[np.argmax([i[2] * i[3] for i in tmp.values])]
+    #             convert_and_crop_images(tmp, img_path, CFG.detection_root_path + img_name + ".jpg")
+    #             output.append(tmp)
+    #         # 검출된 객체가 없으면 raw image를 그대로 저장합니다 (좌표값은 -1로 저장)
+    #         else:
+    #             shutil.copy(img_path, CFG.detection_root_path + img_name + ".jpg")
+    #             output.append(np.ones(4, dtype="float32") * -1.0)
+    #     df_metainfo[img_category][["x", "y", "w", "h"]] = np.stack(output)
+    #     pickleIO(df_metainfo[img_category][["x", "y", "w", "h"]], f"./detect_res_{img_category}.pkl", "w")
+
+    # V2
+    for idx, img_category in enumerate(label_mapper.keys()):
+        if len(df_metainfo[img_category]) == 0:
+            continue
         output = []
-        for img_name, img_path, img_conf, img_coord in zip(df_metainfo[img_category]["fname"], df_metainfo[img_category]["fpath"], result_detect[img_category]["conf"], result_detect[img_category]["coord"]):
-            # 검출된 객체가 하나 이상이면 가장 bounding box 넓이가 큰 것을 저장합니다
-            if len(img_conf) > 0:
-                # tmp = pd.Series({i.boxes.conf.item(): i.boxes.xywh.detach().cpu().numpy().flatten() for i in img_res})
-                tmp = pd.Series({i: j for i, j in zip(img_conf, img_coord)})
+        for img_name, img_path, img_cls, img_conf, img_coord in zip(df_metainfo[img_category]["fname"], df_metainfo[img_category]["fpath"], result_detect[img_category]["cls"], result_detect[img_category]["conf"], result_detect[img_category]["coord"]):
+            # 각 그림 유형에 대해 검출된 객체가 하나 이상이면 가장 bounding box 넓이가 큰 것을 저장합니다
+            if (img_cls == idx).sum() > 0:
+                tmp = pd.Series({j: k for i, j, k in zip(img_cls, img_conf, img_coord) if i == idx})
                 tmp = tmp.iloc[np.argmax([i[2] * i[3] for i in tmp.values])]
                 convert_and_crop_images(tmp, img_path, CFG.detection_root_path + img_name + ".jpg")
                 output.append(tmp)
